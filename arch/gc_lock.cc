@@ -330,8 +330,8 @@ calcVisibleEpoch()
     else visibleEpoch = epoch - 2;
 
     if (compareEpochs(visibleEpoch, oldValue) < 0) {
-        cerr << "old = " << old.print() << endl;
-        cerr << "new = " << print() << endl;
+        //cerr << "old = " << old.print() << endl;
+        //cerr << "new = " << print() << endl;
     }
 
     // Visible epoch must be monotonic increasing
@@ -403,7 +403,13 @@ updateAtomic(Atomic & oldValue, Atomic & newValue, RunDefer runDefer)
         // We updated the current visible epoch.  We can now wake up
         // anything that was waiting for it to be visible and run any
         // deferred handlers.
-        futex_wake(data->atomic.visibleEpoch);
+        
+        // TODO TODO TODO
+        // There can be races here.  We need to make sure that we
+        // publish the highest visible epoch, which can change
+        // uncontrollably.
+        data->visibleFutex = newValue.visibleEpoch;
+        futex_wake(data->visibleFutex);
         if (runDefer) {
             runDefers();
         }
@@ -487,6 +493,8 @@ enterCS(ThreadGcInfoEntry * entry, RunDefer runDefer)
         Atomic newValue = current;
 
         if (newValue.exclusive) {
+            // We don't check the error, as a spurious wakeup will just
+            // make the loop continue.
             futex_wait(data->atomic.exclusive, 1);
             current = data->atomic;
             continue;
@@ -575,23 +583,7 @@ enterCSExclusive(ThreadGcInfoEntry * entry)
     // to exit.  This is kind of a critical section barrier.
     int startEpoch = current.epoch;
     
-#if 1
     visibleBarrier();
-#else
-
-    for (unsigned i = 0;  ;  ++i, current = data->atomic) {
-
-        if (current.visibleEpoch == current.epoch
-            && current.inCurrent() == 0 && current.inOld() == 0)
-            break;
-        
-        long res = futex_wait(data->atomic.visibleEpoch, current.visibleEpoch);
-        if (res == -1) {
-            if (errno == EAGAIN) continue;
-            throw ML::Exception(errno, "futex_wait");
-        }
-    }
-#endif
     
     ExcAssertEqual(data->atomic.epoch, startEpoch);
 
@@ -689,9 +681,11 @@ visibleBarrier()
             return;
 
         if (i % 128 == 127 || true) {
-            long res = futex_wait(data->atomic.visibleEpoch, current.visibleEpoch);
+            // Note that we don't care about the actual value of the visible
+            // epoch, only that it's different from the current one
+            long res = futex_wait(data->visibleFutex, current.visibleEpoch);
             if (res == -1) {
-                if (errno == EAGAIN) continue;
+                if (errno == EAGAIN || errno == EINTR) continue;
                 throw ML::Exception(errno, "futex_wait");
             }
         }
