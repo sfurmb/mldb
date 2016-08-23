@@ -56,12 +56,12 @@ BOOST_AUTO_TEST_CASE ( test_gc )
 
     BOOST_CHECK(gc.isLockedShared());
 
-    bool deferred = false;
+    std::atomic<int> deferred(false);
 
     cerr << endl << "before defer" << endl;
     gc.dump();
 
-    gc.defer([&] () { deferred = true; std::atomic_thread_fence(std::memory_order_seq_cst); });
+    gc.defer([&] () { deferred = true; });
 
     cerr << endl << "after defer" << endl;
     gc.dump();
@@ -73,6 +73,19 @@ BOOST_AUTO_TEST_CASE ( test_gc )
 
     BOOST_CHECK(!gc.isLockedShared());
     BOOST_CHECK(deferred);
+
+    BOOST_REQUIRE(!gc.isLockedByAnyThread());
+}
+
+BOOST_AUTO_TEST_CASE ( test_exclusive )
+{
+    GcLock lock;
+
+    for (unsigned i = 0;  i < 100000;  ++i) {
+        GcLock::ExclusiveGuard guard(lock);
+    }
+
+    BOOST_REQUIRE(!lock.isLockedByAnyThread());
 }
 
 BOOST_AUTO_TEST_CASE(test_mutual_exclusion)
@@ -145,10 +158,13 @@ BOOST_AUTO_TEST_CASE(test_mutual_exclusion)
         cerr << "iterations: shared " << sharedIterations
              << " exclusive " << exclusiveIterations << endl;
         cerr << "multiShared = " << multiShared << endl;
+
+        BOOST_REQUIRE(!lock.isLockedByAnyThread());
     }
 
     {
         cerr << "multi shared" << endl;
+        cerr << "starting at " << lock.currentEpoch() << endl;
         sharedIterations = exclusiveIterations = multiShared = finished = 0;
         ThreadGroup tg;
         for (unsigned i = 0;  i < nthreads;  ++i)
@@ -162,6 +178,9 @@ BOOST_AUTO_TEST_CASE(test_mutual_exclusion)
         cerr << "iterations: shared " << sharedIterations
              << " exclusive " << exclusiveIterations << endl;
         cerr << "multiShared = " << multiShared << endl;
+
+        lock.dump();
+        BOOST_REQUIRE(!lock.isLockedByAnyThread());
     }
 
     {
@@ -176,6 +195,8 @@ BOOST_AUTO_TEST_CASE(test_mutual_exclusion)
         cerr << "iterations: shared " << sharedIterations
              << " exclusive " << exclusiveIterations << endl;
         cerr << "multiShared = " << multiShared << endl;
+
+        BOOST_REQUIRE(!lock.isLockedByAnyThread());
     }
 
     {
@@ -191,6 +212,8 @@ BOOST_AUTO_TEST_CASE(test_mutual_exclusion)
         cerr << "iterations: shared " << sharedIterations
              << " exclusive " << exclusiveIterations << endl;
         cerr << "multiShared = " << multiShared << endl;
+
+        BOOST_REQUIRE(!lock.isLockedByAnyThread());
     }
 
     {
@@ -210,6 +233,8 @@ BOOST_AUTO_TEST_CASE(test_mutual_exclusion)
         cerr << "iterations: shared " << sharedIterations
              << " exclusive " << exclusiveIterations << endl;
         cerr << "multiShared = " << multiShared << endl;
+
+        BOOST_REQUIRE(!lock.isLockedByAnyThread());
     }
 
     {
@@ -225,6 +250,8 @@ BOOST_AUTO_TEST_CASE(test_mutual_exclusion)
         cerr << "iterations: shared " << sharedIterations
              << " exclusive " << exclusiveIterations << endl;
         cerr << "multiShared = " << multiShared << endl;
+
+        BOOST_REQUIRE(!lock.isLockedByAnyThread());
     }
 
     {
@@ -240,6 +267,8 @@ BOOST_AUTO_TEST_CASE(test_mutual_exclusion)
         cerr << "iterations: shared " << sharedIterations
              << " exclusive " << exclusiveIterations << endl;
         cerr << "multiShared = " << multiShared << endl;
+
+        BOOST_REQUIRE(!lock.isLockedByAnyThread());
     }
 
     {
@@ -255,8 +284,9 @@ BOOST_AUTO_TEST_CASE(test_mutual_exclusion)
         cerr << "iterations: shared " << sharedIterations
              << " exclusive " << exclusiveIterations << endl;
         cerr << "multiShared = " << multiShared << endl;
-    }
 
+        BOOST_REQUIRE(!lock.isLockedByAnyThread());
+    }
 }
 
 #endif
@@ -640,6 +670,8 @@ BOOST_AUTO_TEST_CASE ( test_gc_sync_many_threads_contention )
     TestBase<GcLock> test(nthreads, nblocks, nSpinThreads);
     test.run(std::bind(&TestBase<GcLock>::allocThreadSync, &test,
                        std::placeholders::_1));
+
+    BOOST_REQUIRE(!test.gc.isLockedByAnyThread());
 }
 #endif
 
@@ -654,6 +686,8 @@ BOOST_AUTO_TEST_CASE ( test_gc_deferred_contention )
     TestBase<GcLock> test(nthreads, nblocks, nSpinThreads);
     test.run(std::bind(&TestBase<GcLock>::allocThreadDefer, &test,
                        std::placeholders::_1));
+
+    BOOST_REQUIRE(!test.gc.isLockedByAnyThread());
 }
 
 
@@ -669,6 +703,8 @@ BOOST_AUTO_TEST_CASE ( test_gc_sync )
     TestBase<GcLock> test(nthreads, nblocks);
     test.run(std::bind(&TestBase<GcLock>::allocThreadSync, &test,
                        std::placeholders::_1));
+
+    BOOST_REQUIRE(!test.gc.isLockedByAnyThread());
 }
 
 BOOST_AUTO_TEST_CASE ( test_gc_sync_many_threads )
@@ -681,6 +717,8 @@ BOOST_AUTO_TEST_CASE ( test_gc_sync_many_threads )
     TestBase<GcLock> test(nthreads, nblocks);
     test.run(std::bind(&TestBase<GcLock>::allocThreadSync, &test,
                        std::placeholders::_1));
+
+    BOOST_REQUIRE(!test.gc.isLockedByAnyThread());
 }
 
 BOOST_AUTO_TEST_CASE ( test_gc_deferred )
@@ -693,6 +731,8 @@ BOOST_AUTO_TEST_CASE ( test_gc_deferred )
     TestBase<GcLock> test(nthreads, nblocks);
     test.run(std::bind(&TestBase<GcLock>::allocThreadDefer, &test,
                        std::placeholders::_1));
+
+    BOOST_REQUIRE(!test.gc.isLockedByAnyThread());
 }
 
 
@@ -776,6 +816,8 @@ BOOST_AUTO_TEST_CASE ( test_defer_race )
     finished = true;
 
     tg.join_all();
+
+    BOOST_REQUIRE(!gc.isLockedByAnyThread());
 }
 
 #endif

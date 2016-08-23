@@ -213,18 +213,8 @@ public:
         */
         bool calcVisibleEpoch();
         
-        bool anyInCurrent() const { return in[epoch & 1]; }
-        bool anyInOld() const { return in[(epoch - 1)&1]; }
-
-        void setIn(int32_t epoch, int val)
-        {
-            in[epoch & 1] = val;
-        }
-
-        void addIn(int32_t epoch, int val)
-        {
-            in[epoch & 1] += val;
-        }
+        bool anyInCurrent() const { return anyIn[epoch & 1]; }
+        bool anyInOld() const { return anyIn[(epoch - 1)&1]; }
 
         /** Check that the invariants all hold.  Throws an exception if not. */
         void validate() const;
@@ -235,7 +225,7 @@ public:
             struct {
                 epoch_t epoch;         ///< Current epoch number (could be smaller).
                 epoch_t visibleEpoch;  ///< Lowest epoch number that's visible
-                uint8_t in[2];         ///< How many threads in each epoch
+                uint16_t anyIn[2];      ///< How many threads in each epoch
                 uint8_t exclusive;     ///< Mutex value to lock exclusively
             };
             struct {
@@ -271,6 +261,7 @@ public:
     void exitCS(ThreadGcInfoEntry * entry = 0, RunDefer runDefer = RD_YES);
     void enterCSExclusive(ThreadGcInfoEntry * entry = 0);
     void exitCSExclusive(ThreadGcInfoEntry * entry = 0);
+    void endEpoch(ThreadGcInfoEntry * entry, RunDefer runDefer);
 
     int myEpoch(GcInfo::PerThreadInfo * threadInfo = 0) const
     {
@@ -441,6 +432,13 @@ public:
         return entry.writeLocked;
     }
 
+    bool isLockedByAnyThread() const
+    {
+        return data->atomic.exclusive
+            || data->atomic.anyIn[0] || data->atomic.anyIn[1] 
+            || data->numInEpoch[0].load() || data->numInEpoch[1].load();
+    }
+
     enum DoLock {
         DONT_LOCK = 0,
         DO_LOCK = 1
@@ -502,9 +500,9 @@ public:
 
     struct SpeculativeGuard {
         SpeculativeGuard(GcLockBase &lock,
-                         RunDefer runDefer = RD_YES) :
-            lock(lock),
-            runDefer_(runDefer) 
+                         RunDefer runDefer = RD_YES)
+            : lock(lock),
+              runDefer_(runDefer) 
         {
             lock.lockSpeculative(0, runDefer_);
         }

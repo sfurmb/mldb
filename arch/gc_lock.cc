@@ -348,7 +348,7 @@ GcLockBase::Atomic::
 print() const
 {
     return ML::format("epoch: %d, in: %d, in-1: %d, visible: %d, exclusive: %d",
-                      epoch, anyInCurrent(), anyInOld(), visibleEpoch, exclusive);
+                      epoch, anyInCurrent(), anyInOld(), visibleEpoch, (int)exclusive);
 }
 
 std::string
@@ -477,19 +477,6 @@ enterCS(ThreadGcInfoEntry * entry, RunDefer runDefer)
         
     ExcAssertEqual(entry->inEpoch, -1);
 
-#if 0 // later...
-    // Be optimistic...
-    int optimisticEpoch = data->atomic.epoch;
-    if (__sync_add_and_fetch(data->in + (optimisticEpoch & 1), 1) > 1
-        && data->atomic.epoch == optimisticEpoch) {
-        entry->inEpoch = optimisticEpoch & 1;
-        return;
-    }
-
-    // undo optimism
-    __sync_add_and_fetch(data->in + (optimisticEpoch & 1), -1);
-#endif // optimistic
-
     Atomic current = data->atomic;
 
     for (;;) {
@@ -504,18 +491,57 @@ enterCS(ThreadGcInfoEntry * entry, RunDefer runDefer)
         }
 
         if (newValue.anyInOld() == 0) {
-            // We're entering a new epoch
+            // We're entering a new epoch.  Reflect it
             newValue.epoch += 1;
-            newValue.setIn(newValue.epoch, 1);
-        }
-        else {
-            // No new epoch as the old one isn't finished yet
-            newValue.addIn(newValue.epoch, 1);
         }
 
-        entry->inEpoch = newValue.epoch & 1;
-            
+        auto newInEpoch = newValue.epoch & 1;
+
+        auto unwindSpeculativeIncrement = [&] ()
+            {
+                if (entry->inEpoch != -1) {
+                    // Unwind the speculative increment
+                    // ... 
+                
+                    // We failed.  Unwind the speculative update
+                    auto newInEpoch = data->numInEpoch[entry->inEpoch]
+                    .fetch_add(-1 /*, std::memory_order_release*/);
+        
+                    if (newInEpoch == 1) {
+                        // We kept the epoch alive by speculatively updating.
+                        // Now we need to clean it up.
+                        //endEpoch(entry, runDefer);
+                        //cerr << "need to clean up" << endl;
+                        //cerr << "original " << current.print() << endl;
+
+                        //current = data->atomic;
+                        //cerr << "now " << current.print() << endl;
+                        //cerr << "newValue.epoch = " << newValue.epoch << endl;
+                        //cerr << "current.epoch = " << current.epoch << endl;
+                        while (true) {
+                            newValue = current;
+                            newValue.anyIn[entry->inEpoch] = 0;
+                            if (updateAtomic(current, newValue, runDefer))
+                                break;
+                        }
+                        //cerr << "done cleanup" << endl;
+                        entry->inEpoch = -1;
+                    }
+                }
+            };
+
+        entry->inEpoch = newInEpoch;
+
+        // Speculatively increment our in epoch counter
+        data->numInEpoch[entry->inEpoch]
+            .fetch_add(1 /*, std::memory_order_release*/);
+        
+        newValue.anyIn[entry->inEpoch] = 1;
+
+        // Do the real update
         if (updateAtomic(current, newValue, runDefer)) break;
+
+        unwindSpeculativeIncrement();
     }
 }
 
@@ -528,22 +554,29 @@ exitCS(ThreadGcInfoEntry * entry, RunDefer runDefer /* = true */)
 
     ExcCheck(entry->inEpoch == 0 || entry->inEpoch == 1,
             "Invalid inEpoch");
-    // Fast path
-    if (__sync_fetch_and_add(data->atomic.in + entry->inEpoch, -1) > 1) {
+    // Fast path; no update on the atomic state just the epoch counter
+    if (data->numInEpoch[entry->inEpoch]
+        .fetch_add(-1 /*, std::memory_order_release*/) > 1) {
         entry->inEpoch = -1;
         return;
     }
 
-        
-    // Slow path; an epoch may have come to an end
-    
+    // Slow path; an epoch has come to an end
+    endEpoch(entry, runDefer);
+}
+
+void
+GcLockBase::
+endEpoch(ThreadGcInfoEntry * entry, RunDefer runDefer)
+{
+    ExcAssert(entry);
+
     Atomic current = data->atomic;
 
     for (;;) {
         Atomic newValue = current;
-
-        //newValue.addIn(entry->inEpoch, -1);
-
+        //ExcAssertEqual(newValue.anyIn[entry->inEpoch], 1);
+        newValue.anyIn[entry->inEpoch] = 0;  // nothing in our epoch
         if (updateAtomic(current, newValue, runDefer)) break;
     }
 
