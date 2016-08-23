@@ -233,13 +233,14 @@ public:
         /** Check that the invariants all hold.  Throws an exception if not. */
         void validate() const;
 
+        typedef uint32_t epoch_t;
+
         volatile union {
             struct {
-                int32_t epoch;        ///< Current epoch number (could be smaller).
-                int32_t visibleEpoch; ///< Lowest epoch number that's visible
-                int16_t in[2];        ///< How many threads in each epoch
-                int8_t exclusive;    ///< Mutex value to lock exclusively
-                int8_t unused[3];
+                epoch_t epoch;         ///< Current epoch number (could be smaller).
+                epoch_t visibleEpoch;  ///< Lowest epoch number that's visible
+                uint8_t in[2];        ///< How many threads in each epoch
+                uint8_t exclusive;     ///< Mutex value to lock exclusively
             };
             struct {
                 uint64_t bits;

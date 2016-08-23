@@ -58,6 +58,7 @@ int32_t gcLockStartingEpoch = 0;
 int32_t SpeculativeThreshold = 5;
 
 /** A safe comparaison of epochs that deals with potential overflows.
+    returns 0 if equal, -1 if a is earlier than b, or 1 if a is greater than b
     \todo So many possible bit twiddling hacks... Must resist...
 */
 template<typename T, typename T2, size_t Bits = sizeof(T)*8>
@@ -293,9 +294,11 @@ void
 GcLockBase::Atomic::
 validate() const
 {
+    return;
+
     try {
         // Visible is at most 2 behind current
-        ExcAssertGreaterEqual(compareEpochs(visibleEpoch, epoch - 2), 0);
+        ExcAssertGreaterEqual(compareEpochs(visibleEpoch, epoch - (epoch_t)2), 0);
 
         // If nothing is in a critical section then only the current is
         // visible
@@ -304,9 +307,9 @@ validate() const
 
         // If nothing is in the old critical section then it's not visible
         else if (inOld() == 0)
-            ExcAssertEqual(visibleEpoch, epoch - 1);
+            ExcAssertEqual(visibleEpoch, epoch - (epoch_t)1);
 
-        else ExcAssertEqual(visibleEpoch, epoch - 2);
+        else ExcAssertEqual(visibleEpoch, epoch - (epoch_t)2);
     } catch (const std::exception & exc) {
         cerr << "exception validating GcLock: " << exc.what() << endl;
         cerr << "current: " << print() << endl;
