@@ -194,21 +194,26 @@ public:
 
         typedef uint64_t q2 __attribute__((__vector_size__(16)));
         
-        volatile union Atomic {
-            struct {
-                int32_t epoch;        ///< Current epoch number (could be smaller).
-                int32_t visibleEpoch; ///< Lowest epoch number that's visible
-                int32_t exclusive;    ///< Mutex value to lock exclusively
-                int16_t in[2];        ///< How many threads in each epoch
-            };
-            struct {
-                uint64_t bits;
-                uint64_t bits2;
-            };
-            struct {
-                q2 q;
-            };
-        } JML_ALIGNED(16) atomic;
+        struct Atomic {
+            volatile union {
+                struct {
+                    int32_t epoch;        ///< Current epoch number (could be smaller).
+                    int32_t visibleEpoch; ///< Lowest epoch number that's visible
+                    int32_t exclusive;    ///< Mutex value to lock exclusively
+                    int16_t in[2];        ///< How many threads in each epoch
+                };
+                struct {
+                    uint64_t bits;
+                    uint64_t bits2;
+                };
+                struct {
+                    q2 q;
+                };
+            } JML_ALIGNED(16);
+        } atomic;
+
+        std::atomic<int> visibleFutex;
+        std::atomic<int> exclusiveFutex;
 
         int16_t inCurrent() const { return atomic.in[atomic.epoch & 1]; }
         int16_t inOld() const { return atomic.in[(atomic.epoch - 1)&1]; }
