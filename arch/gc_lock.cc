@@ -495,7 +495,7 @@ enterCS(ThreadGcInfoEntry * entry, RunDefer runDefer)
         if (newValue.exclusive) {
             // We don't check the error, as a spurious wakeup will just
             // make the loop continue.
-            futex_wait(data->atomic.exclusive, 1);
+            futex_wait(data->exclusiveFutex, 1);
             current = data->atomic;
             continue;
         }
@@ -557,7 +557,7 @@ enterCSExclusive(ThreadGcInfoEntry * entry)
 
     for (;;) {
         if (current.exclusive) {
-            futex_wait(data->atomic.exclusive, 1);
+            futex_wait(data->exclusiveFutex, 1);
             current = data->atomic;
             continue;
         }
@@ -578,6 +578,7 @@ enterCSExclusive(ThreadGcInfoEntry * entry)
     }
 
     ExcAssertEqual(data->atomic.exclusive, 1);
+    data->exclusiveFutex.store(1, std::memory_order_release);
 
     // At this point, we have exclusive access... now wait for everything else
     // to exit.  This is kind of a critical section barrier.
@@ -641,7 +642,8 @@ exitCSExclusive(ThreadGcInfoEntry * entry)
     }    
     
     // Wake everything waiting on the exclusive lock
-    futex_wake(data->atomic.exclusive);
+    data->exclusiveFutex.store(0, std::memory_order_release);
+    futex_wake(data->exclusiveFutex);
     
     entry->inEpoch = -1;
 }
