@@ -213,20 +213,16 @@ public:
         */
         bool calcVisibleEpoch();
         
-        int16_t inCurrent() const { return in[epoch & 1]; }
-        int16_t inOld() const { return in[(epoch - 1)&1]; }
+        bool anyInCurrent() const { return in[epoch & 1]; }
+        bool anyInOld() const { return in[(epoch - 1)&1]; }
 
         void setIn(int32_t epoch, int val)
         {
-            //if (epoch != this->epoch && epoch + 1 != this->epoch)
-            //    throw ML::Exception("modifying wrong epoch");
             in[epoch & 1] = val;
         }
 
         void addIn(int32_t epoch, int val)
         {
-            //if (epoch != this->epoch && epoch + 1 != this->epoch)
-            //    throw ML::Exception("modifying wrong epoch");
             in[epoch & 1] += val;
         }
 
@@ -239,7 +235,7 @@ public:
             struct {
                 epoch_t epoch;         ///< Current epoch number (could be smaller).
                 epoch_t visibleEpoch;  ///< Lowest epoch number that's visible
-                uint8_t in[2];        ///< How many threads in each epoch
+                uint8_t in[2];         ///< How many threads in each epoch
                 uint8_t exclusive;     ///< Mutex value to lock exclusively
             };
             struct {
@@ -256,12 +252,15 @@ public:
         Data()
             : visibleFutex(0), exclusiveFutex(0)
         {
+            numInEpoch[0] = 0;
+            numInEpoch[1] = 0;
         }
 
         Atomic atomic;
    
         std::atomic<int32_t> visibleFutex;
         std::atomic<int32_t> exclusiveFutex;
+        std::atomic<uint32_t> numInEpoch[2];
 
         /** Human readable string. */
         std::string print() const;

@@ -302,11 +302,11 @@ validate() const
 
         // If nothing is in a critical section then only the current is
         // visible
-        if (inOld() == 0 && inCurrent() == 0)
+        if (anyInOld() == 0 && anyInCurrent() == 0)
             ExcAssertEqual(visibleEpoch, epoch);
 
         // If nothing is in the old critical section then it's not visible
-        else if (inOld() == 0)
+        else if (anyInOld() == 0)
             ExcAssertEqual(visibleEpoch, epoch - (epoch_t)1);
 
         else ExcAssertEqual(visibleEpoch, epoch - (epoch_t)2);
@@ -326,9 +326,9 @@ calcVisibleEpoch()
     int oldValue = visibleEpoch;
 
     // Set the visible epoch
-    if (inCurrent() == 0 && inOld() == 0)
+    if (anyInCurrent() == 0 && anyInOld() == 0)
         visibleEpoch = epoch;
-    else if (inOld() == 0)
+    else if (anyInOld() == 0)
         visibleEpoch = epoch - 1;
     else visibleEpoch = epoch - 2;
 
@@ -348,7 +348,7 @@ GcLockBase::Atomic::
 print() const
 {
     return ML::format("epoch: %d, in: %d, in-1: %d, visible: %d, exclusive: %d",
-                      epoch, inCurrent(), inOld(), visibleEpoch, exclusive);
+                      epoch, anyInCurrent(), anyInOld(), visibleEpoch, exclusive);
 }
 
 std::string
@@ -503,7 +503,7 @@ enterCS(ThreadGcInfoEntry * entry, RunDefer runDefer)
             continue;
         }
 
-        if (newValue.inOld() == 0) {
+        if (newValue.anyInOld() == 0) {
             // We're entering a new epoch
             newValue.epoch += 1;
             newValue.setIn(newValue.epoch, 1);
@@ -599,8 +599,8 @@ enterCSExclusive(ThreadGcInfoEntry * entry)
 
         try {
             ExcAssertEqual(current.exclusive, 1);
-            ExcAssertEqual(current.inCurrent(), 0);
-            ExcAssertEqual(current.inOld(), 0);
+            ExcAssertEqual(current.anyInCurrent(), 0);
+            ExcAssertEqual(current.anyInOld(), 0);
         } catch (...) {
             ThreadGcInfoEntry & entry = getEntry();
             cerr << "entry->inEpoch = " << entry->inEpoch << endl;
@@ -628,8 +628,8 @@ exitCSExclusive(ThreadGcInfoEntry * entry)
 
     try {
         ExcAssertEqual(current.exclusive, 1);
-        ExcAssertEqual(current.inCurrent(), 0);
-        ExcAssertEqual(current.inOld(), 0);
+        ExcAssertEqual(current.anyInCurrent(), 0);
+        ExcAssertEqual(current.anyInOld(), 0);
     } catch (...) {
         cerr << "entry->inEpoch = " << entry->inEpoch << endl;
         cerr << "entry->readLocked = " << entry->readLocked << endl;
@@ -679,7 +679,7 @@ visibleBarrier()
         }
 
         // If there's nothing in a critical section then we're OK
-        if (current.inCurrent() == 0 && current.inOld() == 0)
+        if (current.anyInCurrent() == 0 && current.anyInOld() == 0)
             return;
 
         if (current.visibleEpoch == startEpoch)
@@ -785,11 +785,11 @@ doDefer(void (fn) (Args...), Args... args)
     Atomic current = data->atomic;
 
     int32_t newestVisibleEpoch = current.epoch;
-    if (current.inCurrent() == 0) --newestVisibleEpoch;
+    if (current.anyInCurrent() == 0) --newestVisibleEpoch;
 
 #if 1
     // Nothing is in a critical section; we can run it inline
-    if (current.inCurrent() + current.inOld() == 0) {
+    if (current.anyInCurrent() + current.anyInOld() == 0) {
         fn(std::forward<Args>(args)...);
         return;
     }
@@ -805,9 +805,9 @@ doDefer(void (fn) (Args...), Args... args)
 
         // Find the oldest live epoch
         int oldestLiveEpoch = -1;
-        if (current.inOld() > 0)
+        if (current.anyInOld() > 0)
             oldestLiveEpoch = current.epoch - 1;
-        else if (current.inCurrent() > 0)
+        else if (current.anyInCurrent() > 0)
             oldestLiveEpoch = current.epoch;
     
         if (oldestLiveEpoch == -1 || 
@@ -818,7 +818,7 @@ doDefer(void (fn) (Args...), Args... args)
         }
     
         // Nothing is in a critical section; we can run it inline
-        if (current.inCurrent() + current.inOld() == 0)
+        if (current.anyInCurrent() + current.anyInOld() == 0)
             break;
 #endif
 
@@ -872,8 +872,8 @@ GcLockBase::
 dump()
 {
     Atomic current = data->atomic;
-    cerr << "epoch " << current.epoch << " in " << current.inCurrent()
-         << " in-1 " << current.inOld() << " vis " << current.visibleEpoch
+    cerr << "epoch " << current.epoch << " in " << current.anyInCurrent()
+         << " in-1 " << current.anyInOld() << " vis " << current.visibleEpoch
          << " excl " << current.exclusive << endl;
     cerr << "deferred: ";
     {
