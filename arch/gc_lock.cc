@@ -5,6 +5,7 @@
    This file is part of MLDB. Copyright 2015 Datacratic. All rights reserved.
 */
 
+#include "mldb/arch/arch.h"
 #include "mldb/arch/gc_lock.h"
 #include "mldb/arch/tick_counter.h"
 #include "mldb/arch/spinlock.h"
@@ -28,9 +29,10 @@ namespace Datacratic {
 template<class X>
 JML_ALWAYS_INLINE bool cmp_xchg_16b(X & val, X & old, const X & new_val)
 {
+#if JML_INTEL_ISA
     /* Split new_val into low and high parts. */
-    uint64_t * pold = reinterpret_cast<uint64_t *>(&old);
-    const uint64_t * pnew = reinterpret_cast<const uint64_t *>(&new_val);
+    uint64_t * pold = (uint64_t *)(&old);
+    const uint64_t * pnew = (const uint64_t *)(&new_val);
 
     uint8_t result;
     asm volatile ("lock cmpxchg16b  %[val]\n\t"
@@ -39,6 +41,8 @@ JML_ALWAYS_INLINE bool cmp_xchg_16b(X & val, X & old, const X & new_val)
                   : [val] "m" (val), "b" (pnew[0]), "c" (pnew[1])
                   : "cc");
     return result;
+#endif
+    return true;
 }
 
 
@@ -56,10 +60,10 @@ int32_t SpeculativeThreshold = 5;
 /** A safe comparaison of epochs that deals with potential overflows.
     \todo So many possible bit twiddling hacks... Must resist...
 */
-template<typename T, size_t Bits = sizeof(T)*8>
+template<typename T, typename T2, size_t Bits = sizeof(T)*8>
 static inline
 int
-compareEpochs (T a, T b)
+compareEpochs (T a, T2 b)
 {
     static_assert(Bits >= 2, "Bits is too low to guarantee isolation");
 
@@ -260,18 +264,18 @@ print() const
 }
 
 inline GcLockBase::Data::
-Data() :
-    bits(0), bits2(0)
+Data()
 {
-    epoch = gcLockStartingEpoch; // makes it easier to test overflows.
-    visibleEpoch = epoch;
+    std::memset((void *)&atomic, 0, sizeof(atomic));
+    atomic.epoch = gcLockStartingEpoch; // makes it easier to test overflows.
+    atomic.visibleEpoch = atomic.epoch;
 }
 
 inline GcLockBase::Data::
 Data(const Data & other)
 {
     //ML::ticks();
-    q = other.q;
+    atomic.q = other.atomic.q;
     //ML::ticks();
 }
 
@@ -280,7 +284,7 @@ GcLockBase::Data::
 operator = (const Data & other)
 {
     //ML::ticks();
-    this->q = other.q;
+    this->atomic.q = other.atomic.q;
     //ML::ticks();
     return *this;
 }
@@ -291,18 +295,18 @@ validate() const
 {
     try {
         // Visible is at most 2 behind current
-        ExcAssertGreaterEqual(compareEpochs(visibleEpoch, epoch - 2), 0);
+        ExcAssertGreaterEqual(compareEpochs(atomic.visibleEpoch, atomic.epoch - 2), 0);
 
         // If nothing is in a critical section then only the current is
         // visible
         if (inOld() == 0 && inCurrent() == 0)
-            ExcAssertEqual(visibleEpoch, epoch);
+            ExcAssertEqual(atomic.visibleEpoch, atomic.epoch);
 
         // If nothing is in the old critical section then it's not visible
         else if (inOld() == 0)
-            ExcAssertEqual(visibleEpoch, epoch - 1);
+            ExcAssertEqual(atomic.visibleEpoch, atomic.epoch - 1);
 
-        else ExcAssertEqual(visibleEpoch, epoch - 2);
+        else ExcAssertEqual(atomic.visibleEpoch, atomic.epoch - 2);
     } catch (const std::exception & exc) {
         cerr << "exception validating GcLock: " << exc.what() << endl;
         cerr << "current: " << print() << endl;
@@ -316,24 +320,24 @@ calcVisibleEpoch()
 {
     Data old = *this;
 
-    int oldValue = visibleEpoch;
+    int oldValue = atomic.visibleEpoch;
 
     // Set the visible epoch
     if (inCurrent() == 0 && inOld() == 0)
-        visibleEpoch = epoch;
+        atomic.visibleEpoch = atomic.epoch;
     else if (inOld() == 0)
-        visibleEpoch = epoch - 1;
-    else visibleEpoch = epoch - 2;
+        atomic.visibleEpoch = atomic.epoch - 1;
+    else atomic.visibleEpoch = atomic.epoch - 2;
 
-    if (compareEpochs(visibleEpoch, oldValue) < 0) {
+    if (compareEpochs(atomic.visibleEpoch, oldValue) < 0) {
         cerr << "old = " << old.print() << endl;
         cerr << "new = " << print() << endl;
     }
 
     // Visible epoch must be monotonic increasing
-    ExcAssertGreaterEqual(compareEpochs(visibleEpoch, oldValue), 0);
+    ExcAssertGreaterEqual(compareEpochs(atomic.visibleEpoch, oldValue), 0);
 
-    return oldValue != visibleEpoch;
+    return oldValue != atomic.visibleEpoch;
 }
         
 std::string
@@ -341,7 +345,7 @@ GcLockBase::Data::
 print() const
 {
     return ML::format("epoch: %d, in: %d, in-1: %d, visible: %d, exclusive: %d",
-                      epoch, inCurrent(), inOld(), visibleEpoch, exclusive);
+                      atomic.epoch, inCurrent(), inOld(), atomic.visibleEpoch, atomic.exclusive);
 }
 
 GcLockBase::
@@ -366,7 +370,7 @@ updateData(Data & oldValue, Data & newValue, RunDefer runDefer)
 {
     bool wake;
     try {
-        ExcAssertGreaterEqual(compareEpochs(newValue.epoch, oldValue.epoch), 0);
+        ExcAssertGreaterEqual(compareEpochs(newValue.atomic.epoch, oldValue.atomic.epoch), 0);
         wake = newValue.calcVisibleEpoch();
     } catch (...) {
         cerr << "update: oldValue = " << oldValue.print() << endl;
@@ -385,13 +389,14 @@ updateData(Data & oldValue, Data & newValue, RunDefer runDefer)
     }
 #endif
 
-    if (!cmp_xchg_16b(data->q, oldValue.q, newValue.q)) return false;
+    if (!cmp_xchg_16b(data->atomic.q, oldValue.atomic.q, newValue.atomic.q))
+        return false;
 
     if (wake) {
         // We updated the current visible epoch.  We can now wake up
         // anything that was waiting for it to be visible and run any
         // deferred handlers.
-        futex_wake(data->visibleEpoch);
+        futex_wake(data->atomic.visibleEpoch);
         if (runDefer) {
             runDefers();
         }
@@ -425,7 +430,7 @@ checkDefers()
     while (!deferred->entries.empty() &&
             compareEpochs(
                     deferred->entries.begin()->first,
-                    data->visibleEpoch) <= 0)
+                    data->atomic.visibleEpoch) <= 0)
     {
         result.reserve(deferred->entries.size());
 
@@ -433,7 +438,7 @@ checkDefers()
                  end = deferred->entries.end();
              it != end;  /* no inc */) {
 
-            if (compareEpochs(it->first, data->visibleEpoch) > 0)
+            if (compareEpochs(it->first, data->atomic.visibleEpoch) > 0)
                 break;  // still visible
 
             ExcAssert(it->second);
@@ -458,9 +463,9 @@ enterCS(ThreadGcInfoEntry * entry, RunDefer runDefer)
 
 #if 0 // later...
     // Be optimistic...
-    int optimisticEpoch = data->epoch;
+    int optimisticEpoch = data->atomic.epoch;
     if (__sync_add_and_fetch(data->in + (optimisticEpoch & 1), 1) > 1
-        && data->epoch == optimisticEpoch) {
+        && data->atomic.epoch == optimisticEpoch) {
         entry->inEpoch = optimisticEpoch & 1;
         return;
     }
@@ -474,23 +479,23 @@ enterCS(ThreadGcInfoEntry * entry, RunDefer runDefer)
     for (;;) {
         Data newValue = current;
 
-        if (newValue.exclusive) {
-            futex_wait(data->exclusive, 1);
+        if (newValue.atomic.exclusive) {
+            futex_wait(data->atomic.exclusive, 1);
             current = *data;
             continue;
         }
 
         if (newValue.inOld() == 0) {
             // We're entering a new epoch
-            newValue.epoch += 1;
-            newValue.setIn(newValue.epoch, 1);
+            newValue.atomic.epoch += 1;
+            newValue.setIn(newValue.atomic.epoch, 1);
         }
         else {
             // No new epoch as the old one isn't finished yet
-            newValue.addIn(newValue.epoch, 1);
+            newValue.addIn(newValue.atomic.epoch, 1);
         }
 
-        entry->inEpoch = newValue.epoch & 1;
+        entry->inEpoch = newValue.atomic.epoch & 1;
             
         if (updateData(current, newValue, runDefer)) break;
     }
@@ -506,7 +511,7 @@ exitCS(ThreadGcInfoEntry * entry, RunDefer runDefer /* = true */)
     ExcCheck(entry->inEpoch == 0 || entry->inEpoch == 1,
             "Invalid inEpoch");
     // Fast path
-    if (__sync_fetch_and_add(data->in + entry->inEpoch, -1) > 1) {
+    if (__sync_fetch_and_add(data->atomic.in + entry->inEpoch, -1) > 1) {
         entry->inEpoch = -1;
         return;
     }
@@ -536,13 +541,13 @@ enterCSExclusive(ThreadGcInfoEntry * entry)
     Data current = *data, newValue;
 
     for (;;) {
-        if (current.exclusive) {
-            futex_wait(data->exclusive, 1);
+        if (current.atomic.exclusive) {
+            futex_wait(data->atomic.exclusive, 1);
             current = *data;
             continue;
         }
 
-        ExcAssertEqual(current.exclusive, 0);
+        ExcAssertEqual(current.atomic.exclusive, 0);
 
         // TODO: single cmp/xchg on just exclusive rather than the whole lot?
         //int old = 0;
@@ -550,18 +555,18 @@ enterCSExclusive(ThreadGcInfoEntry * entry)
         //    continue;
 
         newValue = current;
-        newValue.exclusive = 1;
+        newValue.atomic.exclusive = 1;
         if (updateData(current, newValue, RD_YES)) {
             current = newValue;
             break;
         }
     }
 
-    ExcAssertEqual(data->exclusive, 1);
+    ExcAssertEqual(data->atomic.exclusive, 1);
 
     // At this point, we have exclusive access... now wait for everything else
     // to exit.  This is kind of a critical section barrier.
-    int startEpoch = current.epoch;
+    int startEpoch = current.atomic.epoch;
     
 #if 1
     visibleBarrier();
@@ -569,11 +574,11 @@ enterCSExclusive(ThreadGcInfoEntry * entry)
 
     for (unsigned i = 0;  ;  ++i, current = *data) {
 
-        if (current.visibleEpoch == current.epoch
+        if (current.atomic.visibleEpoch == current.atomic.epoch
             && current.inCurrent() == 0 && current.inOld() == 0)
             break;
         
-        long res = futex_wait(data->visibleEpoch, current.visibleEpoch);
+        long res = futex_wait(data->atomic.visibleEpoch, current.atomic.visibleEpoch);
         if (res == -1) {
             if (errno == EAGAIN) continue;
             throw ML::Exception(errno, "futex_wait");
@@ -581,7 +586,7 @@ enterCSExclusive(ThreadGcInfoEntry * entry)
     }
 #endif
     
-    ExcAssertEqual(data->epoch, startEpoch);
+    ExcAssertEqual(data->atomic.epoch, startEpoch);
 
 
 #if 0
@@ -590,7 +595,7 @@ enterCSExclusive(ThreadGcInfoEntry * entry)
         Data current = *data;
 
         try {
-            ExcAssertEqual(current.exclusive, 1);
+            ExcAssertEqual(current.atomic.exclusive, 1);
             ExcAssertEqual(current.inCurrent(), 0);
             ExcAssertEqual(current.inOld(), 0);
         } catch (...) {
@@ -605,7 +610,7 @@ enterCSExclusive(ThreadGcInfoEntry * entry)
     }
 #endif
 
-    ExcAssertEqual(data->epoch, startEpoch);
+    ExcAssertEqual(data->atomic.epoch, startEpoch);
 
     entry->inEpoch = startEpoch & 1;
 }
@@ -619,7 +624,7 @@ exitCSExclusive(ThreadGcInfoEntry * entry)
     Data current = *data;
 
     try {
-        ExcAssertEqual(current.exclusive, 1);
+        ExcAssertEqual(current.atomic.exclusive, 1);
         ExcAssertEqual(current.inCurrent(), 0);
         ExcAssertEqual(current.inOld(), 0);
     } catch (...) {
@@ -632,12 +637,12 @@ exitCSExclusive(ThreadGcInfoEntry * entry)
     }
 #endif
 
-    if (!__sync_bool_compare_and_swap(&data->exclusive, 1, 0)) {
+    if (!__sync_bool_compare_and_swap(&data->atomic.exclusive, 1, 0)) {
         throw ML::Exception("error exiting exclusive mode");
     }    
     
     // Wake everything waiting on the exclusive lock
-    futex_wake(data->exclusive);
+    futex_wake(data->atomic.exclusive);
     
     entry->inEpoch = -1;
 }
@@ -655,8 +660,8 @@ visibleBarrier()
                             "deadlock");
 
     Data current = *data;
-    int startEpoch = data->epoch;
-    //int startVisible = data.visibleEpoch;
+    int startEpoch = data->atomic.epoch;
+    //int startVisible = data.atomic.visibleEpoch;
     
     // Spin until we're visible
     for (unsigned i = 0;  ;  ++i, current = *data) {
@@ -664,7 +669,7 @@ visibleBarrier()
         //int i = startEpoch & 1;
 
         // Have we moved on?  If we're 2 epochs ahead we're surely not visible
-        if (current.epoch != startEpoch && current.epoch != startEpoch + 1) {
+        if (current.atomic.epoch != startEpoch && current.atomic.epoch != startEpoch + 1) {
             //cerr << "epoch moved on" << endl;
             return;
         }
@@ -673,11 +678,11 @@ visibleBarrier()
         if (current.inCurrent() == 0 && current.inOld() == 0)
             return;
 
-        if (current.visibleEpoch == startEpoch)
+        if (current.atomic.visibleEpoch == startEpoch)
             return;
 
         if (i % 128 == 127 || true) {
-            long res = futex_wait(data->visibleEpoch, current.visibleEpoch);
+            long res = futex_wait(data->atomic.visibleEpoch, current.atomic.visibleEpoch);
             if (res == -1) {
                 if (errno == EAGAIN) continue;
                 throw ML::Exception(errno, "futex_wait");
@@ -773,7 +778,7 @@ doDefer(void (fn) (Args...), Args... args)
 
     Data current = *data;
 
-    int32_t newestVisibleEpoch = current.epoch;
+    int32_t newestVisibleEpoch = current.atomic.epoch;
     if (current.inCurrent() == 0) --newestVisibleEpoch;
 
 #if 1
@@ -795,9 +800,9 @@ doDefer(void (fn) (Args...), Args... args)
         // Find the oldest live epoch
         int oldestLiveEpoch = -1;
         if (current.inOld() > 0)
-            oldestLiveEpoch = current.epoch - 1;
+            oldestLiveEpoch = current.atomic.epoch - 1;
         else if (current.inCurrent() > 0)
-            oldestLiveEpoch = current.epoch;
+            oldestLiveEpoch = current.atomic.epoch;
     
         if (oldestLiveEpoch == -1 || 
                 compareEpochs(oldestLiveEpoch, newestVisibleEpoch) > 0)
@@ -861,9 +866,9 @@ GcLockBase::
 dump()
 {
     Data current = *data;
-    cerr << "epoch " << current.epoch << " in " << current.inCurrent()
-         << " in-1 " << current.inOld() << " vis " << current.visibleEpoch
-         << " excl " << current.exclusive << endl;
+    cerr << "epoch " << current.atomic.epoch << " in " << current.inCurrent()
+         << " in-1 " << current.inOld() << " vis " << current.atomic.visibleEpoch
+         << " excl " << current.atomic.exclusive << endl;
     cerr << "deferred: ";
     {
         std::lock_guard<ML::Spinlock> guard(deferred->lock);

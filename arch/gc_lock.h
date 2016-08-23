@@ -194,12 +194,12 @@ public:
 
         typedef uint64_t q2 __attribute__((__vector_size__(16)));
         
-        volatile union {
+        volatile union Atomic {
             struct {
-                int32_t epoch;       ///< Current epoch number (could be smaller).
-                int16_t in[2];       ///< How many threads in each epoch
-                int32_t visibleEpoch;///< Lowest epoch number that's visible
-                int32_t exclusive; ///< Mutex value to lock exclusively
+                int32_t epoch;        ///< Current epoch number (could be smaller).
+                int32_t visibleEpoch; ///< Lowest epoch number that's visible
+                int32_t exclusive;    ///< Mutex value to lock exclusively
+                int16_t in[2];        ///< How many threads in each epoch
             };
             struct {
                 uint64_t bits;
@@ -208,23 +208,23 @@ public:
             struct {
                 q2 q;
             };
-        } JML_ALIGNED(16);
+        } JML_ALIGNED(16) atomic;
 
-        int16_t inCurrent() const { return in[epoch & 1]; }
-        int16_t inOld() const { return in[(epoch - 1)&1]; }
+        int16_t inCurrent() const { return atomic.in[atomic.epoch & 1]; }
+        int16_t inOld() const { return atomic.in[(atomic.epoch - 1)&1]; }
 
         void setIn(int32_t epoch, int val)
         {
             //if (epoch != this->epoch && epoch + 1 != this->epoch)
             //    throw ML::Exception("modifying wrong epoch");
-            in[epoch & 1] = val;
+            atomic.in[epoch & 1] = val;
         }
 
         void addIn(int32_t epoch, int val)
         {
             //if (epoch != this->epoch && epoch + 1 != this->epoch)
             //    throw ML::Exception("modifying wrong epoch");
-            in[epoch & 1] += val;
+            atomic.in[epoch & 1] += val;
         }
 
         /** Check that the invariants all hold.  Throws an exception if not. */
@@ -240,7 +240,7 @@ public:
 
         bool operator == (const Data & other) const
         {
-            return bits == other.bits && bits2 == other.bits2;
+            return atomic.bits == other.atomic.bits && atomic.bits2 == other.atomic.bits2;
         }
 
         bool operator != (const Data & other) const
@@ -263,7 +263,7 @@ public:
 
     int currentEpoch() const
     {
-        return data->epoch;
+        return data->atomic.epoch;
     }
 
     JML_ALWAYS_INLINE ThreadGcInfoEntry &
