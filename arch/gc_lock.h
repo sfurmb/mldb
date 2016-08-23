@@ -237,8 +237,9 @@ public:
             struct {
                 int32_t epoch;        ///< Current epoch number (could be smaller).
                 int32_t visibleEpoch; ///< Lowest epoch number that's visible
-                int32_t exclusive;    ///< Mutex value to lock exclusively
                 int16_t in[2];        ///< How many threads in each epoch
+                int8_t exclusive;    ///< Mutex value to lock exclusively
+                int8_t unused[3];
             };
             struct {
                 uint64_t bits;
