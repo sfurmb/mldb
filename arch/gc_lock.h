@@ -186,73 +186,83 @@ public:
         GcInfo;
     typedef typename GcInfo::PerThreadInfo ThreadGcInfo;
 
-    struct Data {
-        Data();
-        Data(const Data & other);
+    typedef uint64_t q2 __attribute__((__vector_size__(16)));
+     
+    struct Atomic {
+        Atomic();
 
-        Data & operator = (const Data & other);
+        Atomic(const Atomic & other);
 
-        typedef uint64_t q2 __attribute__((__vector_size__(16)));
-        
-        struct Atomic {
-            volatile union {
-                struct {
-                    int32_t epoch;        ///< Current epoch number (could be smaller).
-                    int32_t visibleEpoch; ///< Lowest epoch number that's visible
-                    int32_t exclusive;    ///< Mutex value to lock exclusively
-                    int16_t in[2];        ///< How many threads in each epoch
-                };
-                struct {
-                    uint64_t bits;
-                    uint64_t bits2;
-                };
-                struct {
-                    q2 q;
-                };
-            } JML_ALIGNED(16);
-        } atomic;
+        Atomic & operator = (const Atomic & other);
 
-        std::atomic<int> visibleFutex;
-        std::atomic<int> exclusiveFutex;
-
-        int16_t inCurrent() const { return atomic.in[atomic.epoch & 1]; }
-        int16_t inOld() const { return atomic.in[(atomic.epoch - 1)&1]; }
-
-        void setIn(int32_t epoch, int val)
+        bool operator == (const Atomic & other) const
         {
-            //if (epoch != this->epoch && epoch + 1 != this->epoch)
-            //    throw ML::Exception("modifying wrong epoch");
-            atomic.in[epoch & 1] = val;
+            return bits == other.bits && bits2 == other.bits2;
         }
 
-        void addIn(int32_t epoch, int val)
+        bool operator != (const Atomic & other) const
         {
-            //if (epoch != this->epoch && epoch + 1 != this->epoch)
-            //    throw ML::Exception("modifying wrong epoch");
-            atomic.in[epoch & 1] += val;
+            return ! operator == (other);
         }
 
-        /** Check that the invariants all hold.  Throws an exception if not. */
-        void validate() const;
+        /** Human readable string. */
+        std::string print() const;
 
         /** Calculate the appropriate value of visibleEpoch from the rest
             of the fields.  Returns true if waiters should be woken up.
         */
         bool calcVisibleEpoch();
         
+        int16_t inCurrent() const { return in[epoch & 1]; }
+        int16_t inOld() const { return in[(epoch - 1)&1]; }
+
+        void setIn(int32_t epoch, int val)
+        {
+            //if (epoch != this->epoch && epoch + 1 != this->epoch)
+            //    throw ML::Exception("modifying wrong epoch");
+            in[epoch & 1] = val;
+        }
+
+        void addIn(int32_t epoch, int val)
+        {
+            //if (epoch != this->epoch && epoch + 1 != this->epoch)
+            //    throw ML::Exception("modifying wrong epoch");
+            in[epoch & 1] += val;
+        }
+
+        /** Check that the invariants all hold.  Throws an exception if not. */
+        void validate() const;
+
+        volatile union {
+            struct {
+                int32_t epoch;        ///< Current epoch number (could be smaller).
+                int32_t visibleEpoch; ///< Lowest epoch number that's visible
+                int32_t exclusive;    ///< Mutex value to lock exclusively
+                int16_t in[2];        ///< How many threads in each epoch
+            };
+            struct {
+                uint64_t bits;
+                uint64_t bits2;
+            };
+            struct {
+                q2 q;
+            };
+        } JML_ALIGNED(16);
+    };
+
+    struct Data {
+        Data()
+            : visibleFutex(0), exclusiveFutex(0)
+        {
+        }
+
+        Atomic atomic;
+   
+        std::atomic<int32_t> visibleFutex;
+        std::atomic<int32_t> exclusiveFutex;
+
         /** Human readable string. */
         std::string print() const;
-
-        bool operator == (const Data & other) const
-        {
-            return atomic.bits == other.atomic.bits && atomic.bits2 == other.atomic.bits2;
-        }
-
-        bool operator != (const Data & other) const
-        {
-            return ! operator == (other);
-        }
-
     } JML_ALIGNED(16);
 
 
@@ -586,7 +596,7 @@ private:
         on that value, and will run any deferred handlers registered for
         that value.
     */
-    bool updateData(Data & oldValue, Data & newValue, RunDefer runDefer);
+    bool updateAtomic(Atomic & oldValue, Atomic & newValue, RunDefer runDefer);
 
     /** Executes any available deferred work. */
     void runDefers();
